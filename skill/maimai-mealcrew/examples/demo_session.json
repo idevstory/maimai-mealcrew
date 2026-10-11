@@ -1,0 +1,29 @@
+{
+  "_note": "⚠️ 合成演示数据，非真实订单。价格与优惠为编造，用于离线跑通流程，不代表麦当劳官方实时结果。",
+  "session_id": "demo-6p-lunch",
+  "store": "演示门店-朝阳店",
+  "channel": "delivery",
+  "settlement_mode": "itemized",
+  "public_fee_split": "equal",
+  "members": [
+    { "id": "m1", "name": "小李" },
+    { "id": "m2", "name": "小王" },
+    { "id": "m3", "name": "小张" },
+    { "id": "m4", "name": "小赵" },
+    { "id": "m5", "name": "小陈" },
+    { "id": "m6", "name": "小孙" }
+  ],
+  "items": [
+    { "item_id": "i1", "product_code": "DEMO-BIGMAC", "name": "巨无霸套餐", "qty": 1, "unit_price_cents": 3200, "item_discount_cents": 0, "bearer_type": "person", "bearer": "m1" },
+    { "item_id": "i2", "product_code": "DEMO-SPICY", "name": "麦辣鸡腿堡套餐", "qty": 1, "unit_price_cents": 2800, "item_discount_cents": 0, "bearer_type": "person", "bearer": "m2" },
+    { "item_id": "i3", "product_code": "DEMO-GRILLED", "name": "板烧鸡腿堡套餐", "qty": 1, "unit_price_cents": 3000, "item_discount_cents": 0, "bearer_type": "person", "bearer": "m3" },
+    { "item_id": "i4", "product_code": "DEMO-CHEESE", "name": "吉士汉堡", "qty": 2, "unit_price_cents": 1500, "item_discount_cents": 0, "bearer_type": "person", "bearer": "m4" },
+    { "item_id": "i5", "product_code": "DEMO-SHAREBOX", "name": "分享盒（共享）", "qty": 1, "unit_price_cents": 5000, "item_discount_cents": 0, "bearer_type": "shared", "shared_members": ["m5", "m6"] },
+    { "item_id": "i6", "product_code": "DEMO-FILET", "name": "麦香鱼套餐", "qty": 1, "unit_price_cents": 2700, "item_discount_cents": 0, "bearer_type": "person", "bearer": "m5" },
+    { "item_id": "i7", "product_code": "DEMO-CORN", "name": "玉米杯", "qty": 1, "unit_price_cents": 1800, "item_discount_cents": 300, "bearer_type": "person", "bearer": "m6" }
+  ],
+  "public_fees": { "delivery_cents": 600, "packaging_cents": 0, "service_cents": 0 },
+  "order_discount_cents": 2000,
+  "order_discount_scope": "ALL",
+  "subsidy": { "type": "per_person", "per_person_cents": 2500, "eligible": "ALL", "covers_public_fees": false }
+}

@@ -1,0 +1,26 @@
+# ===== Secrets / local config =====
+# Real MCP token / credentials must NEVER be committed.
+.env
+*.env
+.env.*
+*.local.json
+
+# ===== Python =====
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# ===== Local runtime state (never publish real sessions/data) =====
+sessions/
+*.session.json
+state/
+
+# ===== OS / editor =====
+.DS_Store
+.idea/
+.vscode/
+
+# ===== Build output (regenerate with build_dist.py) =====
+dist/*.zip
