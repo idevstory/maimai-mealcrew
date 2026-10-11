@@ -1,127 +1,145 @@
 # 麦麦团餐助手 · Maimai MealCrew
 
-> Group Meal Planning & Split Bills for McDonald's orders.
-> 一群人吃麦麦，帮你**整理需求、算清优惠、分好账，改了餐也能重新算清楚**。
+> 一群人吃麦麦，需求一起理，优惠一起算，账单一次清。
+>
+> **多人需求整理 · 灵活结算 · 改单重算**
 
-`麦麦团餐助手` 是麦当劳程序员节创意开发大赛（[M-China/mcd-developer-innovation-challenge](https://github.com/M-China/mcd-developer-innovation-challenge)）的参赛 Skill 项目。它以可安装的 Agent Skill 形式交付：通过对话收集多人点餐需求，调用麦当劳官方 MCP 核价，再用本地确定性脚本完成分账、补贴与改单重算，最终输出 Markdown / JSON / 单文件 HTML 账单。
+同事拼午餐、团队加班餐、朋友一起点外卖——把大家的需求交给麦麦团餐助手，整理谁点什么、谁吃共享餐，再把优惠、配送费和公司补贴算进同一张按人账单。
 
-> ⚠️ 本项目为参赛者独立开发的比赛作品，**非麦当劳官方产品**。餐品、价格、优惠与供应状态一律以麦当劳官方渠道实时结果为准。
+**公司补多少、每人付多少、改餐后差多少，都有账可看。**
 
----
+[看账单效果](#一张账单把钱算清楚) · [试跑演示](#一分钟试跑) · [安装 Skill](docs/installation.md) · [了解 MCP 接入](MCP_INTEGRATION.md)
 
-## 1. 解决什么问题（产品价值）
+## 一张账单，把钱算清楚
 
-多人一起点麦当劳时，组织者常卡在三件事上：**谁点了什么、优惠怎么算、钱怎么分**。本 Skill 用四个价值回应：
+下面是一份 **6 人午餐的离线演示账单**：有个人餐品、共享餐、优惠和配送费，公司每人最多补贴 25 元，剩余由个人承担。
 
-| 价值 | 用户得到什么 | 交付能力 |
-|---|---|---|
-| **核算方便** | 每个人点什么、承担多少，一张账单看清 | 按人餐单 / 共享餐 / 公共费用三类归属，账单金额守恒、分毫不差 |
-| **优惠方便** | 比较单点、套餐和适用优惠，知道实际省在哪里 | 多方案官方核价对比，逐项列明优惠依据与未采用原因 |
-| **补贴方便** | 公司补多少、个人补多少，规则清楚 | 支持每人补贴与全单补贴，明确资格与费用覆盖范围，补贴不转负 |
-| **改餐方便** | 增减人、换餐后，优惠和每个人的金额一起更新 | 方案版本留痕，自动重新核价、输出逐人差额并提示重新确认 |
+![麦麦团餐助手六人账单演示：逐人展示餐费、公共费用、优惠归属、公司承担与个人自付](docs/images/mealcrew-bill-demo.png)
 
-产品价值表述：**需求好整理，优惠算得清，补贴好分配，改餐能重算。**
+| 一起吃饭 | 本单应付 | 公司承担 | 个人自付合计 |
+|---|---|---|---|
+| 6 人 | **¥198.00** | **¥150.00** | **¥48.00** |
 
-## 2. 目标用户
+小李自付 **4.98 元**，小王自付 **1.36 元**；各自拿到了多少优惠、分到了多少公共费用，也在同一行里。组织者不用再逐个解释“为什么你要付这个数”。
 
-- 同事拼午餐 / 加班餐的组织者
-- 朋友聚餐、活动订餐的发起人
-- 需要核算公司餐补（本地结算规则）的团队
+*截图使用合成数据，展示账单呈现与本地结算效果，不代表当前菜单、实时价格或实际可用优惠。*
 
-产品中的"团餐"泛指**多人用餐**；普通到店、外带、外送属于不同业务渠道，企业团餐需以实时接口与权限为准。
+## 从群里的点餐消息，到每个人的账
 
-## 3. 两种运行模式
+### 先整理：谁点什么，谁一起吃
 
-| 模式 | 说明 | 触发条件 |
-|---|---|---|
-| **真实模式（real）** | 调用已配置的麦当劳 MCP 做菜单查询与 `calculate-price` 核价，金额以官方为准 | 宿主已配置 `mcd-mcp` 且 Token 有效 |
-| **离线演示（demo）** | 使用合成数据跑通完整流程，**所有结果明确标注为演示**，不输出伪实时价格 | 无 Token / 无连接时默认可用，或显式 `--mode demo` |
+把分散的点餐消息交给助手，整理成员、餐品、数量和共享关系；有歧义时先确认，再进入核价与结算。
 
-真实模式缺少有效连接时，**停止核价并给出配置指引**，不会静默切到演示冒充实时。真实模式的 `settle` 必须提供官方核价（`--quote`），`revise` 必须提供改单前后的两次核价（`--quote-old` / `--quote-new`）；缺失则拒绝生成账单并以非零退出，不会用本地数字冒充实时价格。
+> “我们 6 个人点麦当劳，公司每人补贴 25 元。小李和小王各点自己的套餐，薯条大家一起吃，配送费平摊。”
 
-## 4. 环境要求
+### 再结算：优惠、公共费用、餐补一起算
 
-- **Python 3.9+**（仅使用标准库，无需 `pip install` 任何依赖即可运行核心流程）
-- 宿主（推荐 WorkBuddy）已配置麦当劳 MCP（`mcd-mcp`）；配置见 `mcp-config.example.json`
-- 真实核价需要有效的 `MCD_MCP_TOKEN` 环境变量（经宿主或环境变量提供，**不写入公开文件**）
+个人餐品按归属计算，共享餐按参与者分摊；优惠核减后，再按约定分配公共费用和补贴。结果可以导出成 **Markdown、JSON 或单文件 HTML 账单**。
 
-## 5. 安装方法
+> “按各自点的餐算，共享餐均分，公司补贴后，列出每个人还需要付多少。”
 
-### 方式 A：在 WorkBuddy 中安装（推荐，官方合作宿主）
+### 有人改餐：看新账，也看差额
 
-1. 左侧边栏【专家·技能·连接器】→【连接器】→【自定义连接器】→【配置 MCP】。
-2. 填入 `mcp-config.example.json` 的内容，将 `Bearer ${MCD_MCP_TOKEN}` 改为 `Bearer <你的真实 Token>`，保存并启用 `mcd-mcp`。
-3. 将本仓库的 `skill/maimai-mealcrew/` 目录作为独立 Skill 安装（或导入 `dist/` 下生成的 ZIP）。
-4. 新开一个会话，用自然语言触发（见第 6 节示例）。
+增减人、换餐、改数量后，重新计算方案，并对比上一版的总额与逐人自付变化。真实价格变化需要由宿主重新取得官方报价。
 
-> 安装只更新 Skill 自身文件，**不覆盖用户已有 MCP 配置**；凭证通过宿主设置或环境变量提供。
+> “小李换大份，跟上一版比差多少钱？”
+>
+> “小王不来了，重新核价，看看优惠和每个人的钱有什么变化。”
 
-### 方式 B：其他 Agent 宿主
+## 适合谁用
 
-任意支持 Agent Skill（含 `SKILL.md` + 资源相对路径加载）的宿主均可。安装后先运行自检：
+- **拼午餐的同事**：各点各的，共享餐和配送费也能一起分。
+- **加班餐的组织者**：餐费与公司补贴放在一张账单里核算。
+- **朋友聚餐、活动订餐的发起人**：整理多人需求，改餐后对比差额。
+
+这里的“团餐”泛指多人用餐；企业团餐专属渠道和优惠需以官方接口与账号权限为准。
+
+## 一分钟试跑
+
+下载或克隆本仓库，在仓库根目录运行（需要 **Python 3.9+**，无需安装第三方依赖）：
 
 ```bash
-python skill/maimai-mealcrew/scripts/mealcrew.py doctor
+python3 skill/maimai-mealcrew/scripts/mealcrew.py demo --output ./demo_out
 ```
 
-## 6. 使用示例（自然语言入口）
+打开生成的 `demo_out/demo_report.html`，即可查看上面的六人账单；同目录还会保存 `demo_result.json`，终端会打印 Markdown 摘要。
 
-1. **整理需求**："帮我们 6 个人点麦当劳，人均预算 35 元，公司补贴 25 元，超出的自己付。"
-2. **匹配与核价**："这是大家的点餐消息，整理一下，看看套餐和券怎么用更划算。"
-3. **结算与改单**："小王不来了，重新算一下满减和每个人的钱。" / "小李换大份，跟上一版比差多少钱？"
+**离线演示无需 Token。** 想通过自然语言使用，先将 [麦麦团餐助手 Skill](skill/maimai-mealcrew/) 安装到支持 Agent Skill 的宿主，再参考 [安装指南](docs/installation.md) 配置麦当劳 MCP。
 
-命令行（核心流程，输入/输出均为 JSON）：
+## 团餐组织者的四个省心时刻
 
-```bash
-# 离线演示：6 人合成场景端到端
-python skill/maimai-mealcrew/scripts/mealcrew.py demo
-
-# 结构化需求 -> 归一化会话
-python skill/maimai-mealcrew/scripts/mealcrew.py normalize --input examples/demo_session.json
-
-# 结算（demo 核价）+ 渲染账单
-python skill/maimai-mealcrew/scripts/mealcrew.py settle --session session.json --mode demo --render html
-
-# 改单：生成新版本并对比差额
-python skill/maimai-mealcrew/scripts/mealcrew.py revise --session session.json --changes changes.json
-
-# 自检
-python skill/maimai-mealcrew/scripts/mealcrew.py doctor
-```
-
-子命令：`normalize` / `candidates` / `settle` / `revise` / `render` / `demo` / `doctor`。
-
-## 7. 能力边界（诚实声明）
-
-- 金额只来自**官方核价**或**确定性本地计算**；角色文案不得覆盖用户约束与脚本结果。
-- 公司补贴是**本地结算规则**，不是官方优惠券，不改变麦当劳应收金额。
-- 优惠券仅使用组织者**已授权账号**的可用券；领取、付费权益与下单需各自明确确认。
-- 真实写操作（领券 `auto-bind-coupons`、创建/查询/取消订单）在用户逐步明确确认后才执行，默认只做**只读核价 + 本地分账**，不在核价流程中静默下单。
-- 官方仅返回总额而无完整折扣归因时，标明"内部约定分摊"，由组织者确认总额分配规则，不把本地推算当作官方逐项账单。
-- 未验证的平台不声明已适配；未验证的接口（如 `query-promotions` 企业团餐满减）不模拟规则。
-
-## 8. 结果截图 / 演示素材
-
-- 真实模式联调截图与脱敏记录见 `docs/integration-log.md`（联调后补全）。
-- 离线演示账单样例由 `demo` 子命令生成，可导出 HTML/PNG。
-- 约 60–90 秒流程视频在发布阶段录制并放入仓库（资料需准确区分模拟与实时）。
-
-## 9. 参赛材料清单
-
-| 文件 | 说明 |
+| 想省心的事 | 麦麦团餐助手帮你做什么 |
 |---|---|
-| `README.md` | 本文件（介绍 / 安装 / 示例 / 目标用户 / 边界） |
-| `CONTEST_DECLARATION.md` | 官方参赛声明（内容不可改动） |
-| `MCP_INTEGRATION.md` | 实际 MCP Server / Tools / 调用流程 / 业务价值 |
-| `mcp-config.example.json` | 官方连接示例，仅环境变量占位符 |
-| `skill/maimai-mealcrew/` | 可安装 Skill 主体（SKILL.md + 脚本 + 参考 + 模板 + 样例） |
-| `tests/` | 业务规则与异常验证（金额守恒、补贴上限、尾差等） |
-| `docs/` | 安装、演示、脱敏联调记录 |
-| `workbuddy.md` | 申请 WorkBuddy 专项奖励时替换为真实开发上下文 |
-| `dist/` | 可导入 ZIP（发布时用 `build_dist.py` 生成） |
+| **需求好整理** | 个人餐、共享餐、数量与参与者整理到一起，少翻群消息，少漏一份餐 |
+| **优惠算得清** | 在相同用餐需求下比较方案应付，列清优惠归属和公共费用，让每个人知道钱怎么算 |
+| **补贴好分配** | 按人补贴或全单补贴，明确谁能补、补哪些费用，直接列出公司承担与个人自付 |
+| **改餐能重算** | 有人退出、换餐、改数量后重新核价与分账，对比上一版总额和逐人差额 |
 
-## 10. 许可证与声明
+最后得到一份可分享、可打印的账单：**餐费、优惠、配送费、公司补贴、个人自付，一张表说清楚。**
 
-- 代码采用 MIT 许可证（详见仓库 LICENSE）。
-- 本项目为大赛参赛作品，非麦当劳官方产品；麦当劳相关商标与餐品信息归麦当劳所有，使用以官方实时数据为准。
-- 详见 `CONTEST_DECLARATION.md`。
+## 使用说明与开发资料
+
+麦麦团餐助手以 **Agent Skill** 交付：宿主负责对话、商品查询和官方 MCP 核价，Python 标准库脚本负责本地金额计算与账单生成。公司补贴是内部结算规则，不改变麦当劳应收金额。
+
+| 想了解什么 | 从这里开始 |
+|---|---|
+| 安装 Skill、配置宿主与 Token | [安装指南](docs/installation.md)、[MCP 配置示例](mcp-config.example.json) |
+| 运行演示、查看输入与输出 | [演示指南](docs/demo-guide.md)、[样例数据](skill/maimai-mealcrew/examples/demo_session.json) |
+| Skill 触发与工作流程 | [SKILL.md](skill/maimai-mealcrew/SKILL.md) |
+| 官方 MCP 的职责与调用流程 | [MCP 接入说明](MCP_INTEGRATION.md) |
+| 金额、需求与报价的数据格式 | [数据契约](skill/maimai-mealcrew/references/data-contract.md) |
+
+<details>
+<summary>开发者入口：命令行、核价与测试</summary>
+
+以下命令均在仓库根目录运行。对话中的需求提取由宿主完成，`normalize` 接收结构化 JSON。
+
+```bash
+# 归一化样例需求
+python3 skill/maimai-mealcrew/scripts/mealcrew.py normalize \
+  --input skill/maimai-mealcrew/examples/demo_session.json --output session.json
+
+# 离线结算并导出 HTML
+python3 skill/maimai-mealcrew/scripts/mealcrew.py settle \
+  --session session.json --mode demo --render html --output bill.html
+
+# 真实结算：quote.json 应由宿主官方核价后归一化生成
+python3 skill/maimai-mealcrew/scripts/mealcrew.py settle \
+  --session session.json --mode real --quote quote.json --render md
+
+# 先准备新需求，由宿主重新核价
+python3 skill/maimai-mealcrew/scripts/mealcrew.py revise \
+  --session session.json --changes changes.json --mode real --prepare --output prepared.json
+
+# 真实改单：需提供原方案与新方案分别核价的结果
+python3 skill/maimai-mealcrew/scripts/mealcrew.py revise \
+  --session session.json --changes changes.json --mode real \
+  --quote-old quote-old.json --quote-new quote-new.json
+
+# 比较已确认相同需求的多个真实报价
+python3 skill/maimai-mealcrew/scripts/mealcrew.py compare --plans plans.json --mode real
+
+# 本地自检与测试（不替代真实 MCP 联调）
+python3 skill/maimai-mealcrew/scripts/mealcrew.py doctor
+python3 -m unittest discover -s tests -v
+
+# 生成可导入的 Skill ZIP
+python3 build_dist.py
+```
+
+真实模式只接受来源为 MCP 且与当前会话、核价输入指纹匹配的报价；详细字段和两阶段改单见 [MCP 工作流](skill/maimai-mealcrew/references/mcp-workflow.md)。`settle`、`revise` 和 `render` 对账失败均阻止正式输出。
+
+子命令：`normalize` / `candidates` / `settle` / `revise` / `compare` / `render` / `demo` / `doctor`。
+
+</details>
+
+## 关于本项目
+
+本项目是 [麦当劳程序员节创意开发大赛](https://github.com/M-China/mcd-developer-innovation-challenge) 的参赛作品，**非麦当劳官方产品**。餐品、价格、优惠和供应状态以官方渠道实时结果为准。
+
+- Token 通过宿主设置或环境变量提供，不写入公开文件。
+- 领取优惠券、下单、取消等操作需要用户明确确认；核价与分账不代表已经下单或付款。
+- 官方缺少逐项优惠归因时，本地分摊需标明依据并由组织者确认。
+- 代码采用 [MIT 许可证](LICENSE)；参赛声明见 [CONTEST_DECLARATION.md](CONTEST_DECLARATION.md)。
+
+如果你也经常组织多人点餐，欢迎试跑演示、提交使用反馈，或 **Star 收藏这个项目**。

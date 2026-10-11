@@ -146,7 +146,9 @@ class TestOrderDiscount(unittest.TestCase):
         ]
         sess = _session(items=items, order_disc=800)
         sess["order_discount_scope"] = ["i1"]
-        res = S.compute_settlement(sess, _quote(3000 + 800 - 800))  # 应付=3000
+        res = S.compute_settlement(sess, _quote(3200))  # 应付=3200
+        self.assertTrue(res["reconciliation"]["ok"])
+        self.assertTrue(res["conservation"]["sum_personal_plus_company_equals_official"])
         by = {m["id"]: m for m in res["members"]}
         # 优惠只分配到 m1
         self.assertEqual(by["m1"]["discount_alloc_cents"], 800)
@@ -158,8 +160,8 @@ class TestEqualSplit(unittest.TestCase):
         sess = _session(mode="equal_split", items=[
             {"item_id": "i1", "unit_price_cents": 1234, "qty": 1},
         ])
-        res = S.compute_settlement(sess, _quote(6300))
-        self.assertEqual(sum(m["personal_pays_cents"] for m in res["members"]), 6300)
+        res = S.compute_settlement(sess, _quote(1234))
+        self.assertEqual(sum(m["personal_pays_cents"] for m in res["members"]), 1234)
         self.assertTrue(res["conservation"]["sum_personal_plus_company_equals_official"])
 
 
@@ -234,7 +236,7 @@ class TestScopeStrictness(unittest.TestCase):
         ]
         sess = _session(items=items, order_disc=800)
         sess["order_discount_scope"] = ["i1"]
-        res = S.compute_settlement(sess, _quote(3000))
+        res = S.compute_settlement(sess, _quote(3200))
         by = {m["id"]: m for m in res["members"]}
         self.assertEqual(by["m1"]["discount_alloc_cents"], 800)
         self.assertEqual(by["m2"]["discount_alloc_cents"], 0)

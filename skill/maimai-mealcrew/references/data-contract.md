@@ -67,3 +67,15 @@
 ## Confirmation（确认）
 
 确认的方案版本、商品与报价标识、费用规则、授权动作；**不包含 Token**。商品/金额/门店/渠道变化后旧确认失效。
+
+## 报价关联字段（真实模式必需）
+
+Quote 除原有字段，还必须包含 `session_id` 与 `input_hash`。`quote_id` 为官方报价标识或宿主实际调用记录标识；`quote_time` 为带时区 ISO 8601 时间。金额必须为非负整数，不能以浮点或字符串传入。
+
+`input_hash` 由 `candidates --mode real` 或 `revise --prepare` 返回，SHA-256 输入为规范化门店、渠道、商品行（ID/编码/数量/单价/商品优惠/options/coupon_ids）、公共费用、订单优惠及范围、全单 coupon_ids。默认渠道为 takeaway。补贴、成员昵称和承担人等内部规则不进入指纹；会话 ID 单独匹配。改变真实商品规格时应同步更新 options，而非只改展示名称。
+
+此协议用于本地关联校验，不是官方 MCP 的字段或签名。必须由宿主基于真实返回生成，不能通过修改来源或指纹把演示报价变成真实报价。
+
+新增 `revision_number` 表示改单序号；改单递增并清除旧 confirmation。最终改单输出保留 `old_version` 和 `new_version`，各含独立需求、报价和结算快照。
+
+Settlement 还保留 `quote_id`、`quote_source`、`quote_time`、`input_hash`，用于核查导出的金额来源。

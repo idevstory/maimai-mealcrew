@@ -37,7 +37,7 @@ cd skill/maimai-mealcrew
 python scripts/mealcrew.py doctor
 ```
 
-`doctor` 会检查目录完整性、Python 运行时、样例计算（金额守恒 + 补贴不转负）与可见工具说明，全部通过即可。
+`doctor` 会检查目录完整性、Python 运行时、样例计算（金额守恒 + 补贴不转负）与可见工具说明。本地检查通过后，真实使用仍需按 [MCP 工作流](../skill/maimai-mealcrew/references/mcp-workflow.md) 验证连接、核价和改单。
 
 ## 步骤四：新会话触发
 

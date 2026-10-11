@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from copy import deepcopy
 from typing import Dict, List, Optional
 
 
@@ -39,9 +40,9 @@ def make_version(label: str, session: dict, quote: dict, settlement: dict,
         "version": label,
         "created_at": now_iso(),
         "state": state,
-        "session_snapshot": session,
-        "quote": quote,
-        "settlement": settlement,
+        "session_snapshot": deepcopy(session),
+        "quote": deepcopy(quote),
+        "settlement": deepcopy(settlement),
     }
 
 
@@ -120,6 +121,13 @@ def diff_versions(old: dict, new: dict) -> dict:
         reconfirm.append("公共费用分摊方式变化")
     if old_s.get("settlement_mode") != new_s.get("settlement_mode"):
         reconfirm.append("结算模式变化")
+
+    if old_s.get("order_discount_scope", "ALL") != new_s.get("order_discount_scope", "ALL"):
+        reconfirm.append("优惠适用范围变化")
+    if old_s.get("public_fees", {}) != new_s.get("public_fees", {}):
+        reconfirm.append("公共费用变化")
+    if per_member:
+        reconfirm.append("成员承担金额变化")
 
     return {
         "official_total_change_cents": new_pay - old_pay,

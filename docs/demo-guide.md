@@ -18,18 +18,18 @@ python skill/maimai-mealcrew/scripts/mealcrew.py demo --output ./demo_out
 - `demo_report.html`：单文件 HTML 账单（打印友好）
 - 终端打印 Markdown 账单摘要
 
-演示场景（`examples/demo_session.json`，6 人）：含个人餐品、共享餐、配送费、订单级满减（满 200 减 20）、每人 25 元公司补贴。
+演示场景（`skill/maimai-mealcrew/examples/demo_session.json`，6 人）：含个人餐品、共享餐、配送费、合成订单级优惠 20 元（不模拟真实门槛资格）、每人 25 元公司补贴。
 
 ## 3. 单步演示
 
 ```bash
 # 归一化需求
-python skill/maimai-mealcrew/scripts/mealcrew.py normalize --input examples/demo_session.json --output /tmp/session.json
+python skill/maimai-mealcrew/scripts/mealcrew.py normalize --input skill/maimai-mealcrew/examples/demo_session.json --output /tmp/session.json
 
 # 结算 + 渲染 HTML
 python skill/maimai-mealcrew/scripts/mealcrew.py settle --session /tmp/session.json --mode demo --render html --output /tmp/bill.html
 
-# 改单：小王退出，重新核价与差额
+# 演示改单：小王退出，本地重算与差额（不验证真实优惠资格）
 python skill/maimai-mealcrew/scripts/mealcrew.py revise \
   --session /tmp/session.json \
   --changes '{"remove_members":["m2"]}' --output /tmp/rev.json
@@ -46,7 +46,7 @@ python skill/maimai-mealcrew/scripts/mealcrew.py revise \
 
 ## 5. 金额守恒自检
 
-无论演示还是真实，结算结果都保证：
+正式输出前必须通过以下校验，不一致时阻止账单：
 
 ```
 所有成员分配合计 == 官方最终应付

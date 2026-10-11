@@ -66,12 +66,15 @@ def render_markdown(result: dict, desensitize: bool = True) -> str:
     lines.append(f"- 结算模式：{data.get('mode')}")
     official = data.get("official_payable_cents", 0)
     source = data.get("quote_source", "unknown")
-    payable_label = "演示应付" if source == "demo" else "官方应付"
+    payable_label = {"demo": "演示应付", "mcp": "官方应付"}.get(source, "来源未核验的应付")
     lines.append(f"- {payable_label}：**{to_yuan(official)}**")
     if source == "demo":
         lines.append(f"- 数据来源：⚠️ 演示数据，非官方实时核价")
+    elif source == "mcp":
+        lines.append("- 数据来源：官方 MCP 核价")
     else:
-        lines.append(f"- 数据来源：官方实时核价（source={source}）")
+        lines.append("- 数据来源：未核验")
+    lines.append(f"- 核价时间：{_md_cell(data.get('quote_time')) or '—'}")
     lines.append(f"- 守恒校验：{'通过' if data.get('conservation', {}).get('sum_personal_plus_company_equals_official') else '未通过 ⚠️'}")
     lines.append("")
     lines.append("## 按人账单")
@@ -137,11 +140,14 @@ def render_html(result: dict, template_path: str = DEFAULT_TEMPLATE, desensitize
     official = data.get("official_payable_cents", 0)
     source = data.get("quote_source", "unknown")
     recon_ok = data.get("conservation", {}).get("sum_personal_plus_company_equals_official")
-    payable_label = "演示应付" if source == "demo" else "官方应付"
+    payable_label = {"demo": "演示应付", "mcp": "官方应付"}.get(source, "来源未核验的应付")
     if source == "demo":
         badge = '<span class="source-badge demo">⚠️ 演示数据 · 非官方实时核价</span>'
+    elif source == "mcp":
+        badge = '<span class="source-badge official">来源：官方实时核价</span>'
     else:
-        badge = f'<span class="source-badge official">来源：官方实时核价（{html_escape(source)}）</span>'
+        badge = '<span class="source-badge demo">来源未核验</span>'
+    badge += f'<p>核价时间：{html_escape(data.get("quote_time") or "—")}</p>'
     summary = (
         f"守恒校验 {'通过' if recon_ok else '未通过'}"
     )

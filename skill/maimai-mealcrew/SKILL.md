@@ -45,6 +45,7 @@ description: >-
   → query-nearby-stores / query-meals / query-meal-detail 匹配商品与规格
   → query-store-coupons 等查询适用优惠
   → calculate-price 对候选方案官方核价（金额以官方为准）
+  → 按 references/mcp-workflow.md 归一化官方返回并关联 input_hash
   → 本地脚本分摊优惠 / 公共费用 / 补贴（确定性、整数分）
   → Markdown + JSON + HTML 账单
   → 改单形成新版本 → 重查必要数据 → 重新核价与结算 → 展示差额 → 重新确认
@@ -64,7 +65,7 @@ description: >-
 
 ```bash
 python scripts/mealcrew.py <subcommand> [options]
-# subcommands: normalize | candidates | settle | revise | render | demo | doctor
+# subcommands: normalize | candidates | settle | revise | compare | render | demo | doctor
 ```
 
 | 子命令 | 作用 | 关键输入输出 |
@@ -72,12 +73,13 @@ python scripts/mealcrew.py <subcommand> [options]
 | `normalize` | 结构化需求 → 会话 JSON（补默认值、稳定 item_id） | `--input` JSON，`--output` 会话 |
 | `candidates` | 产出候选方案与待核价请求 | `--session`、`--mode demo\|real`；demo 本地核价，real **仅输出 MCP 请求不伪造本地金额** |
 | `settle` | 结算：官方金额 + 本地分摊/补贴 | `--session`、`--quote`（**real 模式必填，缺失则拒绝并退出非 0**）、`--render json\|md\|html`（守恒/对账失败阻止账单） |
-| `revise` | 改单：应用变更 → 新版本 → 差额对比 | `--session`、`--changes` JSON、`--mode`、`--quote-old`/`--quote-new`（**real 模式必填，旧报价不可用于新商品**） |
+| `revise` | 改单：应用变更 → 新版本 → 差额对比 | `--session`、`--changes` JSON、`--mode`、`--quote-old`/`--quote-new`（real 完成阶段必填）；`--prepare` 先输出新需求和核价请求，全部对账通过后才输出账单 |
+| `compare` | 比较已确认同需求的 2–8 个方案 | `--plans` 列表，`--mode real`；仅比较已核验报价，记录失败范围 |
 | `render` | 结算结果 → md/html/json | `--result` JSON |
 | `demo` | 离线演示（6 人合成场景） | `--output` 目录，**明确标注演示** |
 | `doctor` | 自检：目录/运行时/样例/工具 | 输出检查清单 |
 
-数据契约见 `references/data-contract.md`；分摊与补贴规则见 `references/settlement-rules.md`；MCP 调用时序见 `references/mcp-workflow.md`。
+核价前阅读 [MCP 工作流](references/mcp-workflow.md)，按两阶段改单准备新输入并取得匹配报价；数据格式见 [数据契约](references/data-contract.md)。处理均分、公共费用或补贴时阅读 [结算规则](references/settlement-rules.md)。真实报价必须为 source=mcp，带会话 ID、核价输入指纹、报价标识和带时区核价时间；本地字段不能替代真实调用证据。
 
 ## 5. 金额与角色约束
 

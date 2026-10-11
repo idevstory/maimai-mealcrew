@@ -88,7 +88,9 @@ class TestCliBlocking(unittest.TestCase):
         sess["subsidy"] = {"type": "none"}
         sess["order_discount_cents"] = 0
         sess_p = self._write_tmp(sess)
-        quote_p = self._write_tmp({"official_payable_cents": 900, "source": "mcp"})
+        q = S.build_demo_quote(sess)
+        q.update(source="mcp", quote_time="2026-10-11T15:00:00+08:00", official_payable_cents=900)
+        quote_p = self._write_tmp(q)
         out_p = tempfile.NamedTemporaryFile("w", suffix=".html", delete=False).name
         rc = mealcrew.main(["settle", "--session", sess_p, "--quote", quote_p,
                             "--mode", "real", "--render", "html", "--output", out_p])

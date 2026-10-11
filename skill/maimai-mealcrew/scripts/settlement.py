@@ -14,6 +14,10 @@
 from __future__ import annotations
 
 from typing import Dict, List, Optional
+from fractions import Fraction
+import hashlib
+import json
+from datetime import datetime
 
 
 def cents_from_yuan(yuan: float) -> int:
@@ -52,6 +56,9 @@ def allocate_proportional(total_cents: int, weights: List[float]) -> List[int]:
         return []
     if total_cents == 0:
         return [0] * n
+    weights = [Fraction(str(w)) for w in weights]
+    if any(w < 0 for w in weights):
+        raise ValueError("权重不能为负")
     wsum = sum(weights)
     if wsum <= 0:
         return split_equally(total_cents, n)
@@ -60,91 +67,150 @@ def allocate_proportional(total_cents: int, weights: List[float]) -> List[int]:
     remainder = total_cents - sum(allocated)
     # 余数分给小数部分最大的参与方（确定性）
     order = sorted(range(n), key=lambda i: ((weights[i] * total_cents) % wsum), reverse=True)
-    for k in range(remainder):
+    for k in range(int(remainder)):
         allocated[order[k]] += 1
     return allocated
 
 
+def nonnegative_int(value, field):
+    if type(value) is not int or value < 0:
+        raise ValueError(f"{field} 必须为非负整数")
+    return value
+
+
 def validate_session(session: dict) -> None:
-    """校验会话结构合法性，非法抛 ValueError（含可读信息）。
-
-    仅在“明确已知非法”时拒绝；保守放行不影响正常结算。
-    """
+    if not isinstance(session, dict):
+        raise ValueError("会话必须为对象")
     members = session.get("members", [])
-    if not isinstance(members, list) or not members:
-        raise ValueError("members 不能为空")
+    if not isinstance(members, list) or not members or any(not isinstance(m, dict) for m in members):
+        raise ValueError("members 必须为非空对象列表")
     ids = [m.get("id") for m in members]
-    if any(i is None for i in ids):
-        raise ValueError("存在缺少 id 的成员")
-    if len(ids) != len(set(ids)):
-        raise ValueError(f"成员 id 重复: {ids}")
-    member_ids = set(ids)
-
-    items = session.get("items", [])
-    mode = session.get("settlement_mode", "itemized")
-    item_ids = []
-    for it in items:
-        iid = it.get("item_id")
-        if not iid:
-            raise ValueError("存在缺少 item_id 的商品")
-        if iid in item_ids:
-            raise ValueError(f"商品 item_id 重复: {iid}")
-        item_ids.append(iid)
-        qty = int(it.get("qty", 1))
-        if qty <= 0:
-            raise ValueError(f"商品 {iid} 数量必须为正整数: {qty}")
-        if int(it.get("unit_price_cents", 0)) < 0:
-            raise ValueError(f"商品 {iid} 单价不能为负")
-        if int(it.get("item_discount_cents", 0)) < 0:
-            raise ValueError(f"商品 {iid} 商品级优惠不能为负")
-        bt = it.get("bearer_type", "person")
-        if bt == "person":
-            # 均分模式下不按商品逐条归属，跳过个人归属校验
-            if mode != "equal_split" and it.get("bearer") not in member_ids:
-                raise ValueError(f"商品 {iid} 的个人归属 {it.get('bearer')} 不在成员列表中")
-        elif bt == "shared":
-            sm = it.get("shared_members", [])
-            if not sm:
-                raise ValueError(f"商品 {iid} 共享餐未指定 shared_members")
-            if any(s not in member_ids for s in sm):
-                raise ValueError(f"商品 {iid} 的 shared_members 含非成员: {sm}")
-        else:
-            raise ValueError(f"商品 {iid} 未知 bearer_type: {bt}")
-
-    scope = session.get("order_discount_scope", "ALL")
-    od = int(session.get("order_discount_cents", 0))
-    if od < 0:
-        raise ValueError("订单级优惠不能为负")
-    if od > 0 and scope not in (None, "ALL"):
-        if not isinstance(scope, (list, tuple)):
-            raise ValueError(f"order_discount_scope 非法: {scope}")
-        unknown = [s for s in scope if s not in item_ids]
-        if unknown:
-            raise ValueError(f"order_discount_scope 含未知商品 {unknown}（需重新核价）")
-
-    subsidy = session.get("subsidy", {"type": "none"}) or {"type": "none"}
-    st = subsidy.get("type", "none")
-    if st not in ("none", "per_person", "whole_order"):
-        raise ValueError(f"subsidy.type 非法: {st}")
-    if st == "per_person" and int(subsidy.get("per_person_cents", 0)) < 0:
-        raise ValueError("subsidy.per_person_cents 不能为负")
-    if st == "whole_order" and int(subsidy.get("whole_order_cents", 0)) < 0:
-        raise ValueError("subsidy.whole_order_cents 不能为负")
-    elig = subsidy.get("eligible", "ALL")
-    if elig not in (None, "ALL") and not isinstance(elig, (list, tuple)):
-        raise ValueError(f"subsidy.eligible 非法: {elig}")
-    if isinstance(elig, (list, tuple)) and any(e not in member_ids for e in elig):
-        raise ValueError(f"subsidy.eligible 含非成员: {elig}")
-
-    fees = session.get("public_fees", {}) or {}
-    for k, v in fees.items():
-        if int(v) < 0:
-            raise ValueError(f"public_fees.{k} 不能为负: {v}")
+    if any(not isinstance(i, str) or not i for i in ids) or len(ids) != len(set(ids)):
+        raise ValueError("成员 id 必须为非空且不重复的字符串")
     mode = session.get("settlement_mode", "itemized")
     if mode not in ("itemized", "equal_split"):
-        raise ValueError(f"settlement_mode 非法: {mode}")
+        raise ValueError("settlement_mode 非法")
     if session.get("public_fee_split", "equal") not in ("equal", "by_meal_cost"):
         raise ValueError("public_fee_split 非法")
+    items = session.get("items", [])
+    if not isinstance(items, list) or any(not isinstance(it, dict) for it in items):
+        raise ValueError("items 必须为对象列表")
+    item_ids = [it.get("item_id") for it in items]
+    if any(not isinstance(i, str) or not i for i in item_ids) or len(item_ids) != len(set(item_ids)):
+        raise ValueError("商品 item_id 必须为非空且不重复的字符串")
+    for it in items:
+        iid = it["item_id"]
+        qty = nonnegative_int(it.get("qty", 1), f"{iid}.qty")
+        if qty == 0:
+            raise ValueError("商品数量必须为正整数")
+        unit = nonnegative_int(it.get("unit_price_cents", 0), f"{iid}.unit_price_cents")
+        disc = nonnegative_int(it.get("item_discount_cents", 0), f"{iid}.item_discount_cents")
+        if disc > unit * qty:
+            raise ValueError("商品级优惠超过该商品金额")
+        bt = it.get("bearer_type", "person")
+        if bt == "person":
+            if mode != "equal_split" and it.get("bearer") not in ids:
+                raise ValueError("商品个人归属不在成员列表中")
+        elif bt == "shared":
+            sm = it.get("shared_members", [])
+            if not isinstance(sm, list) or not sm or any(m not in ids for m in sm) or len(sm) != len(set(sm)):
+                raise ValueError("共享成员必须为非空、不重复的有效成员列表")
+        else:
+            raise ValueError("未知 bearer_type")
+    scope = session.get("order_discount_scope", "ALL")
+    if scope is None or scope == "ALL":
+        scoped = item_ids
+    elif isinstance(scope, list) and scope and all(i in item_ids for i in scope) and len(scope) == len(set(scope)):
+        scoped = scope
+    else:
+        raise ValueError("优惠范围为空、重复或含未知商品，需重新核价")
+    od = nonnegative_int(session.get("order_discount_cents", 0), "order_discount_cents")
+    base = sum(it.get("unit_price_cents", 0) * it.get("qty", 1) - it.get("item_discount_cents", 0)
+               for it in items if it["item_id"] in scoped)
+    if od > base:
+        raise ValueError("订单级优惠超过适用商品净额，需重新核价")
+    subsidy = session.get("subsidy", {"type": "none"})
+    if not isinstance(subsidy, dict) or subsidy.get("type", "none") not in ("none", "per_person", "whole_order"):
+        raise ValueError("subsidy 非法")
+    for key in ("per_person_cents", "whole_order_cents"):
+        nonnegative_int(subsidy.get(key, 0), f"subsidy.{key}")
+    if type(subsidy.get("covers_public_fees", True)) is not bool:
+        raise ValueError("covers_public_fees 必须为布尔值")
+    elig = subsidy.get("eligible", "ALL")
+    if elig not in (None, "ALL"):
+        if not isinstance(elig, list) or any(e not in ids for e in elig) or len(elig) != len(set(elig)):
+            raise ValueError("补贴资格必须为不重复的有效成员列表")
+    fees = session.get("public_fees", {})
+    if not isinstance(fees, dict) or set(fees) - {"delivery_cents", "packaging_cents", "service_cents"}:
+        raise ValueError("public_fees 含未知费用或不是对象")
+    for key, value in fees.items():
+        nonnegative_int(value, f"public_fees.{key}")
+
+
+def quote_input(session):
+    """仅包含核价输入，内部补贴和归属变化可以复用同一官方报价。"""
+    return {
+        "store": session.get("store"), "channel": session.get("channel", "takeaway"),
+        "items": [{k: it.get(k, default) for k, default in (
+            ("item_id", None), ("product_code", None), ("qty", 1),
+            ("unit_price_cents", 0), ("item_discount_cents", 0),
+            ("options", {}), ("coupon_ids", []))} for it in session.get("items", [])],
+        "public_fees": {k: session.get("public_fees", {}).get(k, 0)
+                        for k in ("delivery_cents", "packaging_cents", "service_cents")},
+        "order_discount_cents": session.get("order_discount_cents", 0),
+        "order_discount_scope": session.get("order_discount_scope", "ALL"),
+        "coupon_ids": session.get("coupon_ids", []),
+    }
+
+
+def input_hash(session):
+    data = json.dumps(quote_input(session), sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(data.encode("utf-8")).hexdigest()
+
+
+def quote_request(session):
+    validate_session(session)
+    return {"source": "mcp-request", "session_id": session.get("session_id", "session-1"),
+            "input_hash": input_hash(session), "quote_preview": None,
+            "pricing_input": quote_input(session),
+            "note": "本地归一化输入，不是官方 API 参数；宿主必须按 tools/list 的 Schema 转换并调用核价。"}
+
+
+def validate_quote(session, quote, real=False):
+    if not isinstance(quote, dict) or "official_payable_cents" not in quote:
+        raise ValueError("缺少核价结果或最终应付金额")
+    nonnegative_int(quote["official_payable_cents"], "official_payable_cents")
+    if real:
+        if quote.get("source") != "mcp":
+            raise ValueError("真实模式只接受 source=mcp 的报价")
+        if quote.get("session_id") != session.get("session_id", "session-1"):
+            raise ValueError("报价与当前会话不匹配")
+        if quote.get("input_hash") != input_hash(session):
+            raise ValueError("报价与门店、渠道、商品、费用或优惠输入不匹配，需重新核价")
+        if not isinstance(quote.get("quote_id"), str) or not quote["quote_id"]:
+            raise ValueError("缺少 quote_id")
+        try:
+            timestamp = datetime.fromisoformat(quote["quote_time"].replace("Z", "+00:00"))
+            if timestamp.utcoffset() is None:
+                raise ValueError("核价时间必须含时区")
+        except (KeyError, AttributeError, TypeError, ValueError) as exc:
+            raise ValueError("quote_time 必须为带时区的 ISO 8601 时间") from exc
+        expected = {
+            "subtotal_cents": sum(it.get("unit_price_cents", 0) * it.get("qty", 1) for it in session.get("items", [])),
+            "item_discount_cents": sum(it.get("item_discount_cents", 0) for it in session.get("items", [])),
+            "order_discount_cents": session.get("order_discount_cents", 0),
+            "public_fees_cents": sum(session.get("public_fees", {}).values()),
+        }
+        for key, amount in expected.items():
+            if key in quote and nonnegative_int(quote[key], key) != amount:
+                raise ValueError(f"官方 {key} 与归一化明细不一致")
+
+
+def require_valid_settlement(result):
+    if not result["conservation"]["sum_personal_plus_company_equals_official"] or not result["reconciliation"]["ok"]:
+        raise ValueError("金额守恒或明细对账失败，已阻止正式账单")
+    if any(m["personal_pays_cents"] < 0 for m in result["members"]):
+        raise ValueError("个人自付不能为负")
 
 
 def _resolve_scope(item_ids: List[str], scope) -> List[str]:
@@ -187,6 +253,7 @@ def build_demo_quote(session: dict) -> dict:
 
     真实模式不应调用本函数；真实金额来自官方 calculate-price。
     """
+    validate_session(session)
     items = session.get("items", [])
     gross = sum(int(it.get("unit_price_cents", 0)) * int(it.get("qty", 1)) for it in items)
     item_discount = sum(int(it.get("item_discount_cents", 0)) for it in items)
@@ -201,6 +268,8 @@ def build_demo_quote(session: dict) -> dict:
     payable = max(0, payable)
     return {
         "quote_id": "demo-quote",
+        "session_id": session.get("session_id", "session-1"),
+        "input_hash": input_hash(session),
         "source": "demo",
         "official_payable_cents": payable,
         "subtotal_cents": gross,
@@ -220,6 +289,7 @@ def compute_settlement(session: dict, quote: dict, opts: Optional[dict] = None) 
     """
     opts = opts or {}
     validate_session(session)
+    validate_quote(session, quote)
     members = session.get("members", [])
     member_ids = [m["id"] for m in members]
     items = session.get("items", [])
@@ -283,10 +353,14 @@ def compute_settlement(session: dict, quote: dict, opts: Optional[dict] = None) 
 
     # 3) 公共费用分摊
     if mode == "equal_split":
-        # 全单均分：忽略逐商品归属，直接按 official_payable 均分（含费用）
-        member_pre = {m: v for m, v in zip(member_ids, split_equally(official_payable, len(member_ids)))}
-        member_fee = {m: 0 for m in member_ids}
-        member_meal = {m: 0 for m in member_ids}  # 均分模式下不展示逐商品归属
+        meal_total = sum(line_net_before_order) - order_discount
+        meal_shares = split_equally(meal_total, len(member_ids))
+        # 先均分总额，再按餐费份额拆出费用，避免两次独立尾差使 AA 不均。
+        pre_shares = split_equally(meal_total + fee_total, len(member_ids))
+        member_meal = dict(zip(member_ids, meal_shares))
+        member_pre = dict(zip(member_ids, pre_shares))
+        member_fee = {m: member_pre[m] - member_meal[m] for m in member_ids}
+        member_discount = dict(zip(member_ids, split_equally(sum(item_discount_list) + order_discount, len(member_ids))))
     else:
         if public_fee_split == "by_meal_cost":
             weights = [member_meal[m] for m in member_ids]
@@ -304,8 +378,7 @@ def compute_settlement(session: dict, quote: dict, opts: Optional[dict] = None) 
         eligible_set = set(eligible)
 
     # covers_public_fees=False 时，补贴只覆盖餐费（不含公共费用）；
-    # 均分模式下无独立费用口径，视为可覆盖。
-    effective_covers = bool(subsidy.get("covers_public_fees", True)) and (mode != "equal_split")
+    effective_covers = subsidy.get("covers_public_fees", True)
 
     company_bears = {m: 0 for m in member_ids}
     personal_pays = {}
@@ -361,13 +434,15 @@ def compute_settlement(session: dict, quote: dict, opts: Optional[dict] = None) 
         "mode": mode,
         "official_payable_cents": official_payable,
         "quote_source": quote.get("source", "unknown"),
+        "quote_id": quote.get("quote_id"),
+        "input_hash": quote.get("input_hash"),
         "quote_time": quote.get("quote_time") or quote.get("created_at"),
         "quote_notes": quote.get("field_notes") or quote.get("notes") or [],
         "reconciliation": {
             "computed_items_net_plus_fees_cents": items_net_plus_fees,
             "official_payable_cents": official_payable,
             "delta_cents": items_net_plus_fees - official_payable,
-            "ok": (items_net_plus_fees == official_payable) if mode != "equal_split" else True,
+            "ok": items_net_plus_fees == official_payable,
         },
         "totals": {
             "items_net_cents": sum(line_net_before_order),

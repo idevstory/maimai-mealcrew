@@ -86,18 +86,26 @@ def _default_session(raw: dict) -> dict:
 
 def _apply_changes(session: dict, changes: dict) -> dict:
     """返回应用变更后的新会话副本（不修改入参）。"""
+    if not isinstance(changes, dict):
+        raise ValueError("changes 必须为对象")
     new = json.loads(json.dumps(session))  # deep copy
     items_by_id = {it["item_id"]: it for it in new["items"]}
 
     for it in changes.get("add_items", []):
         it = dict(it)
-        it.setdefault("item_id", f"i{len(new['items']) + 1}")
+        if not it.get("item_id"):
+            index = 1
+            used_ids = {row["item_id"] for row in new["items"]}
+            while f"i{index}" in used_ids:
+                index += 1
+            it["item_id"] = f"i{index}"
         new["items"].append(it)
     for rid in changes.get("remove_items", []):
         new["items"] = [it for it in new["items"] if it["item_id"] != rid]
     for iid, patch in changes.get("update_items", {}).items():
-        if iid in items_by_id:
-            items_by_id[iid].update(patch)
+        if iid not in items_by_id:
+            raise ValueError(f"更新商品不存在: {iid}")
+        items_by_id[iid].update(patch)
 
     members_by_id = {m["id"]: m for m in new["members"]}
     for m in changes.get("add_members", []):
@@ -121,13 +129,15 @@ def _apply_changes(session: dict, changes: dict) -> dict:
                      and not any(x in member_ids_after for x in it.get("shared_members", [])))
         ]
 
-    for key in ("store", "channel", "public_fees", "order_discount_cents",
+    for key in ("store", "channel", "coupon_ids", "public_fees", "order_discount_cents",
                 "order_discount_scope", "subsidy", "settlement_mode", "public_fee_split"):
         if key in changes:
             new[key] = changes[key]
     # 任意变更生成新版本：清除旧确认、状态回到 DRAFT（需重新确认）
     new.pop("confirmation", None)
     new.pop("confirmed_at", None)
+    new["revision_number"] = session.get("revision_number", 0) + 1
+    new.pop("quote", None)
     new["state"] = "DRAFT"
     return new
 
@@ -137,6 +147,7 @@ def _apply_changes(session: dict, changes: dict) -> dict:
 def cmd_normalize(args):
     raw = _load_json(args.input)
     sess = _default_session(raw)
+    S.validate_session(sess)
     if args.output:
         _save_json(sess, args.output)
         print(f"[normalize] 已写出会话：{args.output}")
@@ -147,28 +158,19 @@ def cmd_normalize(args):
 
 def cmd_candidates(args):
     sess = _default_session(_load_json(args.session))
+    S.validate_session(sess)
     if args.mode == "demo":
         quote = S.build_demo_quote(sess)
         source = "demo"
-        print("[candidates] 演示模式：使用本地数字构造报价，非官方实时核价。")
+        print("[candidates] 演示模式：使用本地数字构造报价，非官方实时核价。", file=sys.stderr)
     elif args.quote:
         quote = _load_json(args.quote)
-        source = "mcp"
+        S.validate_quote(sess, quote, real=True)
+        S.require_valid_settlement(S.compute_settlement(sess, quote))
+        source = quote["source"]
     else:
         # 真实模式未提供报价：仅产出待核价请求，不伪造本地金额
-        payload = {
-            "source": "mcp-request",
-            "note": "真实模式：请将下列商品明细发送官方 calculate-price 核价，勿以本地数字冒充实时价格",
-            "store": sess.get("store"),
-            "channel": sess.get("channel"),
-            "items": [
-                {"item_id": it["item_id"], "product_code": it.get("product_code"),
-                 "qty": it.get("qty", 1), "unit_price_cents": it.get("unit_price_cents"),
-                 "item_discount_cents": it.get("item_discount_cents", 0)}
-                for it in sess["items"]
-            ],
-            "quote_preview": None,
-        }
+        payload = S.quote_request(sess)
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
     # 候选方案：原餐单（此处列出待发送 calculate-price 的商品明细）
@@ -190,41 +192,31 @@ def cmd_candidates(args):
 
 def cmd_settle(args):
     sess = _default_session(_load_json(args.session))
+    S.validate_session(sess)
     if args.mode == "real" and not args.quote:
         print("[settle] 真实模式必须提供官方核价 --quote，未提供则拒绝生成账单（不退回演示冒充）。", file=sys.stderr)
         return 2
     if args.mode == "demo":
         quote = S.build_demo_quote(sess)
-        source = "demo"
     else:
         quote = _load_json(args.quote)
-        source = "mcp"
+        S.validate_quote(sess, quote, real=True)
 
     try:
         result = S.compute_settlement(sess, quote)
+        S.require_valid_settlement(result)
     except ValueError as e:
         print(f"[settle] 结算被阻止：{e}", file=sys.stderr)
         return 1
 
-    # 正式账单前必须通过守恒与（逐商品）对账校验；否则阻止输出返回非零
-    cons_ok = result["conservation"]["sum_personal_plus_company_equals_official"]
-    recon_ok = result["reconciliation"]["ok"]
-    if not cons_ok or not recon_ok:
-        diag = {
-            "blocked": True,
-            "reason": "金额守恒或对账未通过，未生成正式账单",
-            "conservation": result["conservation"],
-            "reconciliation": result["reconciliation"],
-            "quote_source": result.get("quote_source"),
-            "official_payable_cents": result["official_payable_cents"],
-        }
-        print(json.dumps(diag, ensure_ascii=False, indent=2), file=sys.stderr)
-        print("[settle] ⚠️ 以上校验失败，已阻止正式账单并退出（非 0）。请核验官方报价与字段契约。", file=sys.stderr)
-        return 1
-
     fmt = args.render or "json"
     if fmt == "json":
-        print(RR.render_json(result, desensitize=not args.no_desensitize))
+        out = RR.render_json(result, desensitize=not args.no_desensitize)
+        if args.output:
+            with open(args.output, "w", encoding="utf-8") as f:
+                f.write(out)
+        else:
+            print(out)
     elif fmt == "md":
         out = RR.render_markdown(result, desensitize=not args.no_desensitize)
         if args.output:
@@ -245,6 +237,15 @@ def cmd_settle(args):
 def cmd_revise(args):
     old_sess = _default_session(_load_json(args.session))
     changes = _load_json(args.changes)
+    new_sess = _default_session(_apply_changes(old_sess, changes))
+    S.validate_session(new_sess)
+    if args.prepare:
+        output = {"new_session": new_sess, "quote_request": S.quote_request(new_sess)}
+        if args.output:
+            _save_json(output, args.output)
+        else:
+            print(json.dumps(output, ensure_ascii=False, indent=2))
+        return 0
 
     if args.mode == "demo":
         old_quote = S.build_demo_quote(old_sess)
@@ -257,14 +258,16 @@ def cmd_revise(args):
               "旧报价不可用于新商品，故拒绝改单。", file=sys.stderr)
         return 2
 
-    new_sess = _apply_changes(old_sess, changes)
-    new_sess["session_id"] = old_sess.get("session_id", "session-1")
     if args.mode == "demo":
         new_quote = S.build_demo_quote(new_sess)
 
     try:
+        S.validate_quote(old_sess, old_quote, real=args.mode == "real")
+        S.validate_quote(new_sess, new_quote, real=args.mode == "real")
         old_sett = S.compute_settlement(old_sess, old_quote)
         new_sett = S.compute_settlement(new_sess, new_quote)
+        S.require_valid_settlement(old_sett)
+        S.require_valid_settlement(new_sett)
     except ValueError as e:
         print(f"[revise] 改单被阻止：{e}", file=sys.stderr)
         return 1
@@ -273,7 +276,8 @@ def cmd_revise(args):
     new_ver = R.make_version(changes.get("version_label", "revised"), new_sess, new_quote, new_sett)
     diff = R.diff_versions(old_ver, new_ver)
 
-    output = {"new_session": new_sess, "new_settlement": new_sett, "diff": diff}
+    output = {"new_session": new_sess, "new_settlement": new_sett,
+              "old_version": old_ver, "new_version": new_ver, "diff": diff}
     if args.output:
         _save_json(output, args.output)
         print(f"[revise] 新版本与差额已写出：{args.output}")
@@ -284,11 +288,67 @@ def cmd_revise(args):
     return 0
 
 
+def cmd_compare(args):
+    plans = _load_json(args.plans)
+    if not isinstance(plans, list) or len(plans) < 2 or len(plans) > 8:
+        raise ValueError("比较需提供 2 至 8 个方案")
+    valid, failed = [], []
+    baseline = None
+    labels = set()
+    if any(not isinstance(plan, dict) for plan in plans):
+        raise ValueError("每个方案必须为对象")
+    for index, plan in enumerate(plans):
+        label = plan.get("label", f"plan-{index + 1}")
+        try:
+            if not isinstance(label, str) or label in labels:
+                raise ValueError("方案名称必须为不重复的字符串")
+            labels.add(label)
+            if plan.get("equivalent_confirmed") is not True:
+                raise ValueError("组织者尚未确认此方案满足相同用餐需求")
+            sess = _default_session(plan["session"])
+            S.validate_session(sess)
+            context = (sess.get("store"), sess.get("channel"), sorted(m["id"] for m in sess["members"]))
+            if baseline is None:
+                baseline = context
+            if context != baseline:
+                raise ValueError("方案门店、渠道或成员不一致，不能直接比较")
+            q = plan["quote"] if args.mode == "real" else S.build_demo_quote(sess)
+            S.validate_quote(sess, q, real=args.mode == "real")
+            result = S.compute_settlement(sess, q)
+            S.require_valid_settlement(result)
+            valid.append({"label": label, "payable_cents": result["official_payable_cents"],
+                          "quote_source": result["quote_source"], "quote_id": result["quote_id"],
+                          "quote_time": result["quote_time"], "input_hash": result["input_hash"]})
+        except (ValueError, KeyError, TypeError) as exc:
+            failed.append({"label": label, "reason": str(exc)})
+    if len(valid) < 2:
+        print(json.dumps({"blocked": True, "reason": "有效报价不足两种，不能形成比较结论",
+                          "valid_count": len(valid), "failed": failed}, ensure_ascii=False), file=sys.stderr)
+        return 1
+    ranked = sorted(valid, key=lambda p: p["payable_cents"])
+    minimum = ranked[0]["payable_cents"]
+    output = {"mode": args.mode, "ranking": ranked,
+              "lowest_in_compared_plans": [p["label"] for p in ranked if p["payable_cents"] == minimum],
+              "failed": failed,
+              "note": "仅比较组织者确认需求一致且核价成功的方案，不保证全局最低；补贴不作为官方优惠。"}
+    if args.output:
+        _save_json(output, args.output)
+    else:
+        print(json.dumps(output, ensure_ascii=False, indent=2))
+    return 0
+
+
 def cmd_render(args):
     result = _load_json(args.result)
+    S.require_valid_settlement(result)
     fmt = args.format
     if fmt == "json":
-        print(RR.render_json(result, desensitize=not args.no_desensitize))
+        out = RR.render_json(result, desensitize=not args.no_desensitize)
+        if args.output:
+            with open(args.output, "w", encoding="utf-8") as f:
+                f.write(out)
+        else:
+            print(out)
     elif fmt == "md":
         out = RR.render_markdown(result, desensitize=not args.no_desensitize)
         if args.output:
@@ -344,6 +404,8 @@ def cmd_doctor(args):
         "scripts/render_report.py",
         "templates/report.html",
         "references/data-contract.md",
+        "references/settlement-rules.md",
+        "references/mcp-workflow.md",
     ]
     for rel in need:
         p = os.path.join(skill_root, rel)
@@ -358,17 +420,17 @@ def cmd_doctor(args):
         "session_id": "doctor-sample",
         "members": [{"id": "m1", "name": "A"}, {"id": "m2", "name": "B"}, {"id": "m3", "name": "C"}],
         "settlement_mode": "equal_split",
-        "items": [],
+        "items": [{"item_id": "i1", "qty": 1, "unit_price_cents": 3000}],
         "public_fees": {"delivery_cents": 0, "packaging_cents": 0, "service_cents": 0},
         "subsidy": {"type": "whole_order", "whole_order_cents": 900, "eligible": "ALL"},
     }
     q = S.build_demo_quote(sample)
-    q["official_payable_cents"] = 3000  # 构造 30.00 元总账，验证补贴后守恒
     res = S.compute_settlement(sample, q)
     ok_cons = res["conservation"]["sum_personal_plus_company_equals_official"]
     check("样例金额守恒", ok_cons, f"官方应付={q['official_payable_cents']}分")
     ok_subsidy = all(m["personal_pays_cents"] >= 0 for m in res["members"])
     check("补贴不造成个人自付为负", ok_subsidy)
+    check("均分样例公司补贴 900 分", res["totals"]["subsidy_total_cents"] == 900)
 
     # 4) MCP 工具发现（不自动检查，避免把“未查询”标为通过）
     print("[INFO] MCP 工具发现：未自动检查（运行时由宿主执行 tools/list）；真实核价与改单记录见 docs/integration-log.md")
@@ -410,8 +472,15 @@ def build_parser():
     r.add_argument("--mode", default="demo", choices=["demo", "real"])
     r.add_argument("--quote-old", help="真实模式：改单前官方核价 JSON（文件或内联）")
     r.add_argument("--quote-new", help="真实模式：改单后官方核价 JSON（文件或内联）")
+    r.add_argument("--prepare", action="store_true", help="只应用变更，输出新需求和待核价输入")
     r.add_argument("--output")
     r.set_defaults(func=cmd_revise)
+
+    cmp = sub.add_parser("compare", help="比较已确认需求一致的方案报价")
+    cmp.add_argument("--plans", required=True, help="方案列表 JSON；每项含 label/session/quote/equivalent_confirmed")
+    cmp.add_argument("--mode", choices=["demo", "real"], default="real")
+    cmp.add_argument("--output")
+    cmp.set_defaults(func=cmd_compare)
 
     rd = sub.add_parser("render", help="渲染结算结果为 md/html/json")
     rd.add_argument("--result", required=True)
@@ -431,7 +500,11 @@ def build_parser():
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except (ValueError, OSError, TypeError, KeyError) as exc:
+        print(f"[{args.cmd}] 操作被阻止：{exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
