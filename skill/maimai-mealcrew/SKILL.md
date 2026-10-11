@@ -53,8 +53,8 @@ description: >-
 ## 3. MCP 工具使用边界与动态发现
 
 - **不猜参数、不声称未验证工具可用。** 任何调用前用 `tools/list` 确认工具存在、字段、渠道与权限，记录已验证契约。
-- 首版（P0）只读核价链路：`query-nearby-stores`、`query-meals`、`query-meal-detail`、`query-store-coupons`/`available-coupons`/`query-my-coupons`/`campaign-calendar`、`calculate-price`。
-- P1（不在 P0 静默执行）：`auto-bind-coupons`（领券，需明确确认）、`query-meal-assistance`/`query-promotions`（企业团餐，待 `tools/list` 核验，未发现则跳过并说明）、`create-order`/`query-order`/`cancel-order`（独立验收）。
+- 只读核价链路：`query-nearby-stores`、`query-meals`、`query-meal-detail`、`query-store-coupons`/`available-coupons`/`query-my-coupons`/`campaign-calendar`、`calculate-price`。
+- 需明确确认后才执行的写操作：`auto-bind-coupons`（领券）、`query-meal-assistance`/`query-promotions`（企业团餐，待 `tools/list` 核验，未发现则跳过并说明）、`create-order`/`query-order`/`cancel-order`（独立验收）。
 - 官方仅返回总额而无完整折扣归因时，标明"内部约定分摊"，由组织者确认总额分配规则，不把本地推算当官方逐项账单。
 - 凭证由宿主管理；Skill 不读取、不存储 Token；本仓库文件不含真实凭证。
 
