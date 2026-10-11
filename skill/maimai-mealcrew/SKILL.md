@@ -61,10 +61,15 @@ description: >-
 
 ## 4. 脚本入口与契约
 
-脚本位于本 Skill 目录 `scripts/`，**使用相对路径、仅标准库**，不依赖开发者机器绝对路径。统一 CLI：
+脚本位于本 Skill 目录 `scripts/`，**使用相对路径、仅标准库**，不依赖开发者机器绝对路径。脚本内部按自身所在目录定位 `templates/`、`examples/`、`references/`，因此可从任意工作目录调用，只要给出脚本的**绝对路径**：
 
 ```bash
+# 方式一：先进入 Skill 目录再运行
+cd <本 Skill 目录>
 python scripts/mealcrew.py <subcommand> [options]
+
+# 方式二：直接用脚本绝对路径（推荐，避免路径错位）
+python <本 Skill 目录>/scripts/mealcrew.py <subcommand> [options]
 # subcommands: normalize | candidates | settle | revise | compare | render | demo | doctor
 ```
 
