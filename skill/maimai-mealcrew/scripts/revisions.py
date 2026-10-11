@@ -114,6 +114,12 @@ def diff_versions(old: dict, new: dict) -> dict:
         reconfirm.append("商品/规格/数量/归属变化")
     if {m.get("id") for m in old_s.get("members", [])} != {m.get("id") for m in new_s.get("members", [])}:
         reconfirm.append("成员增减")
+    if (old_s.get("subsidy") or {}) != (new_s.get("subsidy") or {}):
+        reconfirm.append("补贴规则变化")
+    if old_s.get("public_fee_split") != new_s.get("public_fee_split"):
+        reconfirm.append("公共费用分摊方式变化")
+    if old_s.get("settlement_mode") != new_s.get("settlement_mode"):
+        reconfirm.append("结算模式变化")
 
     return {
         "official_total_change_cents": new_pay - old_pay,

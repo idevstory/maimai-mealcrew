@@ -163,6 +163,107 @@ class TestEqualSplit(unittest.TestCase):
         self.assertTrue(res["conservation"]["sum_personal_plus_company_equals_official"])
 
 
+class TestCoversPublicFees(unittest.TestCase):
+    def _base(self, covers):
+        items = [
+            {"item_id": "i1", "unit_price_cents": 1000, "qty": 1, "item_discount_cents": 0,
+             "bearer_type": "person", "bearer": "m1"},
+            {"item_id": "i2", "unit_price_cents": 2000, "qty": 1, "item_discount_cents": 0,
+             "bearer_type": "person", "bearer": "m2"},
+        ]
+        fees = {"delivery_cents": 300, "packaging_cents": 0, "service_cents": 0}
+        subsidy = {"type": "per_person", "per_person_cents": 2000, "eligible": "ALL",
+                   "covers_public_fees": covers}
+        return _session(items=items, fees=fees, subsidy=subsidy,
+                        members=[{"id": "m1"}, {"id": "m2"}])
+
+    def test_false_excludes_fee(self):
+        res = S.compute_settlement(self._base(False), _quote(3300))
+        by = {m["id"]: m for m in res["members"]}
+        # 补贴只覆盖餐费：m1 餐费 1000 -> 公司 1000，个人 = 餐费1000+费150-1000=150
+        self.assertEqual(by["m1"]["company_bears_cents"], 1000)
+        self.assertEqual(by["m1"]["personal_pays_cents"], 150)
+        # m2 餐费 2000 -> 公司 2000，个人 = 2000+150-2000=150
+        self.assertEqual(by["m2"]["company_bears_cents"], 2000)
+        self.assertEqual(by["m2"]["personal_pays_cents"], 150)
+        # 个人自付永不为负，且守恒
+        self.assertTrue(all(m["personal_pays_cents"] >= 0 for m in res["members"]))
+        self.assertTrue(res["conservation"]["sum_personal_plus_company_equals_official"])
+
+    def test_true_includes_fee(self):
+        res = S.compute_settlement(self._base(True), _quote(3300))
+        by = {m["id"]: m for m in res["members"]}
+        # 补贴覆盖餐费+费用：m1 应担 1150 -> 公司 1150，个人 0
+        self.assertEqual(by["m1"]["company_bears_cents"], 1150)
+        self.assertEqual(by["m1"]["personal_pays_cents"], 0)
+        self.assertTrue(all(m["personal_pays_cents"] >= 0 for m in res["members"]))
+        self.assertTrue(res["conservation"]["sum_personal_plus_company_equals_official"])
+
+
+class TestScopeStrictness(unittest.TestCase):
+    def test_unknown_explicit_scope_raises(self):
+        items = [
+            {"item_id": "i1", "unit_price_cents": 1000, "qty": 1, "item_discount_cents": 0,
+             "bearer_type": "person", "bearer": "m1"},
+            {"item_id": "i2", "unit_price_cents": 1000, "qty": 1, "item_discount_cents": 0,
+             "bearer_type": "person", "bearer": "m2"},
+        ]
+        sess = _session(items=items, order_disc=500)
+        sess["order_discount_scope"] = ["zzz"]  # 未知商品
+        with self.assertRaises(ValueError):
+            S.compute_settlement(sess, _quote(1500))
+
+    def test_zero_net_explicit_scope_raises(self):
+        items = [
+            {"item_id": "i1", "unit_price_cents": 1000, "qty": 1, "item_discount_cents": 1000,
+             "bearer_type": "person", "bearer": "m1"},
+            {"item_id": "i2", "unit_price_cents": 1000, "qty": 1, "item_discount_cents": 0,
+             "bearer_type": "person", "bearer": "m2"},
+        ]
+        sess = _session(items=items, order_disc=500)
+        sess["order_discount_scope"] = ["i1"]  # 适用范围内净额为 0
+        with self.assertRaises(ValueError):
+            S.compute_settlement(sess, _quote(1000))
+
+    def test_valid_explicit_scope_kept(self):
+        items = [
+            {"item_id": "i1", "unit_price_cents": 3000, "qty": 1, "item_discount_cents": 0,
+             "bearer_type": "person", "bearer": "m1"},
+            {"item_id": "i2", "unit_price_cents": 1000, "qty": 1, "item_discount_cents": 0,
+             "bearer_type": "person", "bearer": "m2"},
+        ]
+        sess = _session(items=items, order_disc=800)
+        sess["order_discount_scope"] = ["i1"]
+        res = S.compute_settlement(sess, _quote(3000))
+        by = {m["id"]: m for m in res["members"]}
+        self.assertEqual(by["m1"]["discount_alloc_cents"], 800)
+        self.assertEqual(by["m2"]["discount_alloc_cents"], 0)
+
+
+class TestValidation(unittest.TestCase):
+    def test_dup_member_rejected(self):
+        with self.assertRaises(ValueError):
+            S.validate_session(_session(members=[{"id": "m1"}, {"id": "m1"}]))
+
+    def test_unknown_bearer_rejected(self):
+        items = [{"item_id": "i1", "unit_price_cents": 1000, "qty": 1,
+                  "bearer_type": "person", "bearer": "X"}]
+        with self.assertRaises(ValueError):
+            S.validate_session(_session(items=items))
+
+    def test_zero_qty_rejected(self):
+        items = [{"item_id": "i1", "unit_price_cents": 1000, "qty": 0,
+                  "bearer_type": "person", "bearer": "m1"}]
+        with self.assertRaises(ValueError):
+            S.validate_session(_session(items=items))
+
+    def test_demo_session_valid(self):
+        import json
+        ex_path = os.path.join(ROOT, "skill", "maimai-mealcrew", "examples", "demo_session.json")
+        with open(ex_path, encoding="utf-8") as f:
+            S.validate_session(json.load(f))
+
+
 class TestDemoQuote(unittest.TestCase):
     def test_demo_quote_conservation_with_example(self):
         import json

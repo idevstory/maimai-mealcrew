@@ -23,6 +23,23 @@ def to_yuan(cents: int) -> str:
     return f"¥{cents / 100:.2f}"
 
 
+def html_escape(s) -> str:
+    """转义 HTML 特殊字符，避免成员昵称等用户字段注入标记。"""
+    if s is None:
+        return ""
+    return (
+        str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        .replace('"', "&quot;").replace("'", "&#39;")
+    )
+
+
+def _md_cell(s) -> str:
+    """Markdown 表格单元格转义（竖线/换行）。"""
+    if s is None:
+        return ""
+    return str(s).replace("|", "\\|").replace("\n", " ")
+
+
 def redact(obj, denylist=DENY_KEYS):
     """递归遮蔽敏感字段。"""
     if isinstance(obj, dict):
@@ -48,7 +65,13 @@ def render_markdown(result: dict, desensitize: bool = True) -> str:
     lines.append(f"- 会话：{data.get('session_id') or '—'}")
     lines.append(f"- 结算模式：{data.get('mode')}")
     official = data.get("official_payable_cents", 0)
-    lines.append(f"- 官方应付：**{to_yuan(official)}**")
+    source = data.get("quote_source", "unknown")
+    payable_label = "演示应付" if source == "demo" else "官方应付"
+    lines.append(f"- {payable_label}：**{to_yuan(official)}**")
+    if source == "demo":
+        lines.append(f"- 数据来源：⚠️ 演示数据，非官方实时核价")
+    else:
+        lines.append(f"- 数据来源：官方实时核价（source={source}）")
     lines.append(f"- 守恒校验：{'通过' if data.get('conservation', {}).get('sum_personal_plus_company_equals_official') else '未通过 ⚠️'}")
     lines.append("")
     lines.append("## 按人账单")
@@ -57,7 +80,7 @@ def render_markdown(result: dict, desensitize: bool = True) -> str:
     lines.append("|---|---|---|---|---|---|---|")
     for m in data.get("members", []):
         lines.append(
-            f"| {m.get('name')} | {to_yuan(m.get('meal_cost_cents', 0))} "
+            f"| {_md_cell(m.get('name'))} | {to_yuan(m.get('meal_cost_cents', 0))} "
             f"| {to_yuan(m.get('fee_share_cents', 0))} "
             f"| {to_yuan(m.get('discount_alloc_cents', 0))} "
             f"| {to_yuan(m.get('pre_subsidy_cents', 0))} "
@@ -82,7 +105,7 @@ def _bill_table_html(members: list) -> str:
     for m in members:
         rows.append(
             "<tr>"
-            f"<td>{m.get('name')}</td>"
+            f"<td>{html_escape(m.get('name'))}</td>"
             f"<td>{to_yuan(m.get('meal_cost_cents', 0))}</td>"
             f"<td>{to_yuan(m.get('fee_share_cents', 0))}</td>"
             f"<td>{to_yuan(m.get('discount_alloc_cents', 0))}</td>"
@@ -105,22 +128,29 @@ def render_html(result: dict, template_path: str = DEFAULT_TEMPLATE, desensitize
         with open(template_path, "r", encoding="utf-8") as f:
             tpl = f.read()
     except FileNotFoundError:
-        # 模板缺失时降级为极简 HTML，仍保留数据
+        # 模板缺失时降级为极简 HTML，仍保留数据（并转义避免注入）
         return (
             "<!doctype html><meta charset='utf-8'><h1>MealCrew Bill</h1><pre>"
-            + render_json(data, desensitize=False)
+            + html_escape(render_json(data, desensitize=False))
             + "</pre>"
         )
     official = data.get("official_payable_cents", 0)
+    source = data.get("quote_source", "unknown")
     recon_ok = data.get("conservation", {}).get("sum_personal_plus_company_equals_official")
+    payable_label = "演示应付" if source == "demo" else "官方应付"
+    if source == "demo":
+        badge = '<span class="source-badge demo">⚠️ 演示数据 · 非官方实时核价</span>'
+    else:
+        badge = f'<span class="source-badge official">来源：官方实时核价（{html_escape(source)}）</span>'
     summary = (
-        f"官方应付 {to_yuan(official)} ｜ 守恒校验 "
-        f"{'通过' if recon_ok else '未通过'}"
+        f"守恒校验 {'通过' if recon_ok else '未通过'}"
     )
     html = (
         tpl.replace("{{TITLE}}", "麦麦团餐账单 · MealCrew Bill")
-        .replace("{{GENERATED_AT}}", data.get("session_id") or "—")
-        .replace("{{MODE}}", str(data.get("mode")))
+        .replace("{{GENERATED_AT}}", html_escape(data.get("session_id") or "—"))
+        .replace("{{MODE}}", html_escape(str(data.get("mode"))))
+        .replace("{{SOURCE_BADGE}}", badge)
+        .replace("{{PAYABLE_LABEL}}", payable_label)
         .replace("{{OFFICIAL_PAYABLE}}", to_yuan(official))
         .replace("{{BILL_TABLE}}", _bill_table_html(data.get("members", [])))
         .replace("{{SUMMARY}}", summary)

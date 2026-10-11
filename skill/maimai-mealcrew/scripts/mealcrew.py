@@ -125,6 +125,10 @@ def _apply_changes(session: dict, changes: dict) -> dict:
                 "order_discount_scope", "subsidy", "settlement_mode", "public_fee_split"):
         if key in changes:
             new[key] = changes[key]
+    # 任意变更生成新版本：清除旧确认、状态回到 DRAFT（需重新确认）
+    new.pop("confirmation", None)
+    new.pop("confirmed_at", None)
+    new["state"] = "DRAFT"
     return new
 
 
@@ -143,14 +147,30 @@ def cmd_normalize(args):
 
 def cmd_candidates(args):
     sess = _default_session(_load_json(args.session))
-    if args.mode == "demo" or not args.quote:
+    if args.mode == "demo":
         quote = S.build_demo_quote(sess)
         source = "demo"
-    else:
+        print("[candidates] 演示模式：使用本地数字构造报价，非官方实时核价。")
+    elif args.quote:
         quote = _load_json(args.quote)
         source = "mcp"
-    if source == "demo":
-        print("[candidates] 演示模式：使用本地数字构造报价，非官方实时核价。")
+    else:
+        # 真实模式未提供报价：仅产出待核价请求，不伪造本地金额
+        payload = {
+            "source": "mcp-request",
+            "note": "真实模式：请将下列商品明细发送官方 calculate-price 核价，勿以本地数字冒充实时价格",
+            "store": sess.get("store"),
+            "channel": sess.get("channel"),
+            "items": [
+                {"item_id": it["item_id"], "product_code": it.get("product_code"),
+                 "qty": it.get("qty", 1), "unit_price_cents": it.get("unit_price_cents"),
+                 "item_discount_cents": it.get("item_discount_cents", 0)}
+                for it in sess["items"]
+            ],
+            "quote_preview": None,
+        }
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
     # 候选方案：原餐单（此处列出待发送 calculate-price 的商品明细）
     payload = {
         "source": source,
@@ -170,13 +190,37 @@ def cmd_candidates(args):
 
 def cmd_settle(args):
     sess = _default_session(_load_json(args.session))
-    if args.mode == "demo" or not args.quote:
+    if args.mode == "real" and not args.quote:
+        print("[settle] 真实模式必须提供官方核价 --quote，未提供则拒绝生成账单（不退回演示冒充）。", file=sys.stderr)
+        return 2
+    if args.mode == "demo":
         quote = S.build_demo_quote(sess)
-        if args.mode != "demo":
-            print("[settle] 未提供 quote 且非 demo，使用本地构造的演示报价。", file=sys.stderr)
+        source = "demo"
     else:
         quote = _load_json(args.quote)
-    result = S.compute_settlement(sess, quote)
+        source = "mcp"
+
+    try:
+        result = S.compute_settlement(sess, quote)
+    except ValueError as e:
+        print(f"[settle] 结算被阻止：{e}", file=sys.stderr)
+        return 1
+
+    # 正式账单前必须通过守恒与（逐商品）对账校验；否则阻止输出返回非零
+    cons_ok = result["conservation"]["sum_personal_plus_company_equals_official"]
+    recon_ok = result["reconciliation"]["ok"]
+    if not cons_ok or not recon_ok:
+        diag = {
+            "blocked": True,
+            "reason": "金额守恒或对账未通过，未生成正式账单",
+            "conservation": result["conservation"],
+            "reconciliation": result["reconciliation"],
+            "quote_source": result.get("quote_source"),
+            "official_payable_cents": result["official_payable_cents"],
+        }
+        print(json.dumps(diag, ensure_ascii=False, indent=2), file=sys.stderr)
+        print("[settle] ⚠️ 以上校验失败，已阻止正式账单并退出（非 0）。请核验官方报价与字段契约。", file=sys.stderr)
+        return 1
 
     fmt = args.render or "json"
     if fmt == "json":
@@ -195,28 +239,39 @@ def cmd_settle(args):
         with open(path, "w", encoding="utf-8") as f:
             f.write(out)
         print(f"[settle] HTML 账单已写出：{path}")
-    if not result["conservation"]["sum_personal_plus_company_equals_official"]:
-        print("[settle] ⚠️ 金额守恒未通过，请核验字段契约。", file=sys.stderr)
     return 0
 
 
 def cmd_revise(args):
     old_sess = _default_session(_load_json(args.session))
     changes = _load_json(args.changes)
-    old_quote = S.build_demo_quote(old_sess) if (args.mode == "demo") else None
-    old_sett = S.compute_settlement(old_sess, old_quote) if old_quote else None
+
+    if args.mode == "demo":
+        old_quote = S.build_demo_quote(old_sess)
+        new_quote = None  # 在应用变更后按新会话构造
+    elif args.quote_old and args.quote_new:
+        old_quote = _load_json(args.quote_old)
+        new_quote = _load_json(args.quote_new)
+    else:
+        print("[revise] 真实模式必须同时提供 --quote-old 与 --quote-new（两次官方核价），"
+              "旧报价不可用于新商品，故拒绝改单。", file=sys.stderr)
+        return 2
 
     new_sess = _apply_changes(old_sess, changes)
     new_sess["session_id"] = old_sess.get("session_id", "session-1")
-    new_quote = S.build_demo_quote(new_sess) if (args.mode == "demo") else None
-    new_sett = S.compute_settlement(new_sess, new_quote)
+    if args.mode == "demo":
+        new_quote = S.build_demo_quote(new_sess)
 
-    if old_sett and new_quote:
-        old_ver = R.make_version("prev", old_sess, old_quote, old_sett)
-        new_ver = R.make_version(changes.get("version_label", "revised"), new_sess, new_quote, new_sett)
-        diff = R.diff_versions(old_ver, new_ver)
-    else:
-        diff = {"note": "真实模式差额需基于两次官方核价结果对比（此处仅输出新版本）。"}
+    try:
+        old_sett = S.compute_settlement(old_sess, old_quote)
+        new_sett = S.compute_settlement(new_sess, new_quote)
+    except ValueError as e:
+        print(f"[revise] 改单被阻止：{e}", file=sys.stderr)
+        return 1
+
+    old_ver = R.make_version("prev", old_sess, old_quote, old_sett)
+    new_ver = R.make_version(changes.get("version_label", "revised"), new_sess, new_quote, new_sett)
+    diff = R.diff_versions(old_ver, new_ver)
 
     output = {"new_session": new_sess, "new_settlement": new_sett, "diff": diff}
     if args.output:
@@ -315,8 +370,8 @@ def cmd_doctor(args):
     ok_subsidy = all(m["personal_pays_cents"] >= 0 for m in res["members"])
     check("补贴不造成个人自付为负", ok_subsidy)
 
-    # 4) 可见工具说明
-    check("MCP 工具发现", True, "tools/list 在运行时由宿主执行；本自检不读取真实 MCP")
+    # 4) MCP 工具发现（不自动检查，避免把“未查询”标为通过）
+    print("[INFO] MCP 工具发现：未自动检查（运行时由宿主执行 tools/list）；真实核价与改单记录见 docs/integration-log.md")
 
     failed = [n for n, ok, _ in checks if not ok]
     print("\n[doctor] 结论：" + ("全部通过 ✅" if not failed else f"{len(failed)} 项未通过 ❌"))
@@ -353,6 +408,8 @@ def build_parser():
     r.add_argument("--session", required=True)
     r.add_argument("--changes", required=True)
     r.add_argument("--mode", default="demo", choices=["demo", "real"])
+    r.add_argument("--quote-old", help="真实模式：改单前官方核价 JSON（文件或内联）")
+    r.add_argument("--quote-new", help="真实模式：改单后官方核价 JSON（文件或内联）")
     r.add_argument("--output")
     r.set_defaults(func=cmd_revise)
 

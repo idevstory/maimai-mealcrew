@@ -70,9 +70,9 @@ python scripts/mealcrew.py <subcommand> [options]
 | 子命令 | 作用 | 关键输入输出 |
 |---|---|---|
 | `normalize` | 结构化需求 → 会话 JSON（补默认值、稳定 item_id） | `--input` JSON，`--output` 会话 |
-| `candidates` | 产出候选方案与待核价请求 | `--session`、`--mode demo\|real`；demo 本地核价，real 输出 MCP 请求 |
-| `settle` | 结算：官方金额 + 本地分摊/补贴 | `--session`、`--quote`、`--render json\|md\|html` |
-| `revise` | 改单：应用变更 → 新版本 → 差额对比 | `--session`、`--changes` JSON |
+| `candidates` | 产出候选方案与待核价请求 | `--session`、`--mode demo\|real`；demo 本地核价，real **仅输出 MCP 请求不伪造本地金额** |
+| `settle` | 结算：官方金额 + 本地分摊/补贴 | `--session`、`--quote`（**real 模式必填，缺失则拒绝并退出非 0**）、`--render json\|md\|html`（守恒/对账失败阻止账单） |
+| `revise` | 改单：应用变更 → 新版本 → 差额对比 | `--session`、`--changes` JSON、`--mode`、`--quote-old`/`--quote-new`（**real 模式必填，旧报价不可用于新商品**） |
 | `render` | 结算结果 → md/html/json | `--result` JSON |
 | `demo` | 离线演示（6 人合成场景） | `--output` 目录，**明确标注演示** |
 | `doctor` | 自检：目录/运行时/样例/工具 | 输出检查清单 |

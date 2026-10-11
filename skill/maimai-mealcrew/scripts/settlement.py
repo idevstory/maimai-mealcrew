@@ -65,13 +65,97 @@ def allocate_proportional(total_cents: int, weights: List[float]) -> List[int]:
     return allocated
 
 
+def validate_session(session: dict) -> None:
+    """校验会话结构合法性，非法抛 ValueError（含可读信息）。
+
+    仅在“明确已知非法”时拒绝；保守放行不影响正常结算。
+    """
+    members = session.get("members", [])
+    if not isinstance(members, list) or not members:
+        raise ValueError("members 不能为空")
+    ids = [m.get("id") for m in members]
+    if any(i is None for i in ids):
+        raise ValueError("存在缺少 id 的成员")
+    if len(ids) != len(set(ids)):
+        raise ValueError(f"成员 id 重复: {ids}")
+    member_ids = set(ids)
+
+    items = session.get("items", [])
+    mode = session.get("settlement_mode", "itemized")
+    item_ids = []
+    for it in items:
+        iid = it.get("item_id")
+        if not iid:
+            raise ValueError("存在缺少 item_id 的商品")
+        if iid in item_ids:
+            raise ValueError(f"商品 item_id 重复: {iid}")
+        item_ids.append(iid)
+        qty = int(it.get("qty", 1))
+        if qty <= 0:
+            raise ValueError(f"商品 {iid} 数量必须为正整数: {qty}")
+        if int(it.get("unit_price_cents", 0)) < 0:
+            raise ValueError(f"商品 {iid} 单价不能为负")
+        if int(it.get("item_discount_cents", 0)) < 0:
+            raise ValueError(f"商品 {iid} 商品级优惠不能为负")
+        bt = it.get("bearer_type", "person")
+        if bt == "person":
+            # 均分模式下不按商品逐条归属，跳过个人归属校验
+            if mode != "equal_split" and it.get("bearer") not in member_ids:
+                raise ValueError(f"商品 {iid} 的个人归属 {it.get('bearer')} 不在成员列表中")
+        elif bt == "shared":
+            sm = it.get("shared_members", [])
+            if not sm:
+                raise ValueError(f"商品 {iid} 共享餐未指定 shared_members")
+            if any(s not in member_ids for s in sm):
+                raise ValueError(f"商品 {iid} 的 shared_members 含非成员: {sm}")
+        else:
+            raise ValueError(f"商品 {iid} 未知 bearer_type: {bt}")
+
+    scope = session.get("order_discount_scope", "ALL")
+    od = int(session.get("order_discount_cents", 0))
+    if od < 0:
+        raise ValueError("订单级优惠不能为负")
+    if od > 0 and scope not in (None, "ALL"):
+        if not isinstance(scope, (list, tuple)):
+            raise ValueError(f"order_discount_scope 非法: {scope}")
+        unknown = [s for s in scope if s not in item_ids]
+        if unknown:
+            raise ValueError(f"order_discount_scope 含未知商品 {unknown}（需重新核价）")
+
+    subsidy = session.get("subsidy", {"type": "none"}) or {"type": "none"}
+    st = subsidy.get("type", "none")
+    if st not in ("none", "per_person", "whole_order"):
+        raise ValueError(f"subsidy.type 非法: {st}")
+    if st == "per_person" and int(subsidy.get("per_person_cents", 0)) < 0:
+        raise ValueError("subsidy.per_person_cents 不能为负")
+    if st == "whole_order" and int(subsidy.get("whole_order_cents", 0)) < 0:
+        raise ValueError("subsidy.whole_order_cents 不能为负")
+    elig = subsidy.get("eligible", "ALL")
+    if elig not in (None, "ALL") and not isinstance(elig, (list, tuple)):
+        raise ValueError(f"subsidy.eligible 非法: {elig}")
+    if isinstance(elig, (list, tuple)) and any(e not in member_ids for e in elig):
+        raise ValueError(f"subsidy.eligible 含非成员: {elig}")
+
+    fees = session.get("public_fees", {}) or {}
+    for k, v in fees.items():
+        if int(v) < 0:
+            raise ValueError(f"public_fees.{k} 不能为负: {v}")
+    mode = session.get("settlement_mode", "itemized")
+    if mode not in ("itemized", "equal_split"):
+        raise ValueError(f"settlement_mode 非法: {mode}")
+    if session.get("public_fee_split", "equal") not in ("equal", "by_meal_cost"):
+        raise ValueError("public_fee_split 非法")
+
+
 def _resolve_scope(item_ids: List[str], scope) -> List[str]:
-    """解析订单级优惠适用范围。scope='ALL' 或 item_id 列表（仅保留存在的）。"""
-    if scope == "ALL" or scope is None:
+    """解析订单级优惠适用范围（仅用于合法范围过滤，不负责“扩大”）。
+
+    返回有效商品 id 列表；显式（非 ALL）范围若过滤后为空，调用方会据此抛错。
+    """
+    if scope is None or scope == "ALL":
         return list(item_ids)
     if isinstance(scope, (list, tuple)):
-        scoped = [i for i in scope if i in item_ids]
-        return scoped if scoped else list(item_ids)
+        return [i for i in scope if i in item_ids]
     return list(item_ids)
 
 
@@ -135,6 +219,7 @@ def compute_settlement(session: dict, quote: dict, opts: Optional[dict] = None) 
     返回结构可在 tests/ 中验证金额守恒、补贴上限、四舍五入与不可补贴人员等规则。
     """
     opts = opts or {}
+    validate_session(session)
     members = session.get("members", [])
     member_ids = [m["id"] for m in members]
     items = session.get("items", [])
@@ -167,12 +252,15 @@ def compute_settlement(session: dict, quote: dict, opts: Optional[dict] = None) 
         item_discount_list.append(idisc)
 
     scoped = _resolve_scope(item_ids, session.get("order_discount_scope", "ALL"))
+    scoped_explicit = not (session.get("order_discount_scope", "ALL") in (None, "ALL"))
+    # 显式范围为空或净额为零：非法/失效，阻止结算并要求重新核价，不得退回全单
+    if scoped_explicit and not scoped:
+        raise ValueError("订单级优惠适用范围内无有效商品，需重新核价（不可退回全单）")
     scoped_weights = [
         line_net_before_order[i] if item_ids[i] in scoped else 0 for i in range(len(items))
     ]
-    if sum(scoped_weights) <= 0:
-        # 适用范围无可分摊净额时，退化为按全部商品净额分摊（保持守恒）
-        scoped_weights = list(line_net_before_order)
+    if scoped_explicit and order_discount > 0 and sum(scoped_weights) <= 0:
+        raise ValueError("订单级优惠适用范围内净额为 0，需重新核价（不可退回全单）")
     order_alloc = allocate_proportional(order_discount, scoped_weights) if order_discount > 0 else [0] * len(items)
 
     # 2) 商品净成本与优惠归属分摊到成员
@@ -215,6 +303,10 @@ def compute_settlement(session: dict, quote: dict, opts: Optional[dict] = None) 
     else:
         eligible_set = set(eligible)
 
+    # covers_public_fees=False 时，补贴只覆盖餐费（不含公共费用）；
+    # 均分模式下无独立费用口径，视为可覆盖。
+    effective_covers = bool(subsidy.get("covers_public_fees", True)) and (mode != "equal_split")
+
     company_bears = {m: 0 for m in member_ids}
     personal_pays = {}
     subsidy_type = subsidy.get("type", "none")
@@ -222,15 +314,18 @@ def compute_settlement(session: dict, quote: dict, opts: Optional[dict] = None) 
     if subsidy_type == "per_person":
         per = int(subsidy.get("per_person_cents", 0))
         for m in member_ids:
-            base = member_pre[m]
+            base = member_meal[m] if not effective_covers else member_pre[m]
             applied = min(per, base) if m in eligible_set else 0
             company_bears[m] = applied
-            personal_pays[m] = base - applied
+            personal_pays[m] = member_pre[m] - applied
     elif subsidy_type == "whole_order":
         total_sub = int(subsidy.get("whole_order_cents", 0))
-        weights = [member_pre[m] if m in eligible_set else 0 for m in member_ids]
+        weights = [
+            (member_meal[m] if not effective_covers else member_pre[m]) if m in eligible_set else 0
+            for m in member_ids
+        ]
         wsum = sum(weights)
-        cap = min(total_sub, wsum)  # 公司补贴不超过所有人应担之和（超出额度保留不使用）
+        cap = min(total_sub, wsum)  # 公司补贴不超过可补贴基数之和（超出额度保留不使用）
         alloc = allocate_proportional(cap, weights) if cap > 0 else [0] * len(member_ids)
         for i, m in enumerate(member_ids):
             company_bears[m] = alloc[i]
@@ -265,6 +360,9 @@ def compute_settlement(session: dict, quote: dict, opts: Optional[dict] = None) 
         "session_id": session.get("session_id"),
         "mode": mode,
         "official_payable_cents": official_payable,
+        "quote_source": quote.get("source", "unknown"),
+        "quote_time": quote.get("quote_time") or quote.get("created_at"),
+        "quote_notes": quote.get("field_notes") or quote.get("notes") or [],
         "reconciliation": {
             "computed_items_net_plus_fees_cents": items_net_plus_fees,
             "official_payable_cents": official_payable,

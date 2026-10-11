@@ -29,6 +29,9 @@
   thead th { background: #fafafa; color: var(--muted); font-weight: 600; }
   td.pay, th:last-child { color: var(--pay); font-weight: 700; }
   .disclaimer { color: var(--muted); font-size: 12px; margin-top: 24px; border-top: 1px dashed var(--line); padding-top: 12px; }
+  .source-badge { display: inline-block; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 999px; margin-bottom: 14px; }
+  .source-badge.official { background: #ecfdf3; color: #047857; border: 1px solid #a7f3d0; }
+  .source-badge.demo { background: #fff7ed; color: #c2410c; border: 1px solid #fed7aa; }
   @media print { body { padding: 12px; } .summary { break-inside: avoid; } }
 </style>
 </head>
@@ -36,8 +39,9 @@
   <div class="wrap">
     <h1>{{TITLE}}</h1>
     <div class="meta">会话：{{GENERATED_AT}} ｜ 结算模式：{{MODE}}</div>
+    <div class="source-badge">{{SOURCE_BADGE}}</div>
     <div class="summary">
-      <strong>官方应付：{{OFFICIAL_PAYABLE}}</strong><br />
+      <strong>{{PAYABLE_LABEL}}：{{OFFICIAL_PAYABLE}}</strong><br />
       {{SUMMARY}}
     </div>
     {{BILL_TABLE}}
